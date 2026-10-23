@@ -82,7 +82,13 @@ def amortisation_schedule(
     instalment = emi(principal, annual_rate, tenure_months)
     balance = principal
     rows = []
-    for month in range(1, tenure_months):
+    # BUG FIX: the loop previously used range(1, tenure_months), which only
+    # generates months 1 .. tenure_months - 1 and silently drops the final
+    # month. That meant the "last month" balance-clearing logic below could
+    # never run (since `month` never actually reached `tenure_months`), so
+    # the schedule was one row short and the balance never reached zero.
+    # Using range(1, tenure_months + 1) includes the final month.
+    for month in range(1, tenure_months + 1):
         interest = round(balance * r, 2)
         principal_part = round(instalment - interest, 2)
         if month == tenure_months:
