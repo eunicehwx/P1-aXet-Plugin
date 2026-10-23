@@ -6,7 +6,13 @@ DEFAULT_CURRENCY = "INR"
 
 
 def _monthly_rate(annual_rate):
-    r = round(annual_rate / 1200, 4)
+    # BUG FIX: previously rounded the monthly rate to 4 decimal places here,
+    # before it was ever used in any calculation. That premature rounding
+    # introduced small precision errors into every EMI, interest, schedule,
+    # and eligibility calculation downstream (e.g. 0% loans showing a tiny
+    # non-zero interest due to floating point rounding artifacts). Now the
+    # full-precision rate is returned and only the final results are rounded.
+    r = annual_rate / 1200
     return r
 
 
