@@ -1,232 +1,85 @@
 # loan-calc architecture
 
-The `loan-calc` repo is very small. Nearly all business logic lives in `loan-calc/loan_calc/calculator.py`. The other files mainly expose or document that logic.
+This document explains what each file in the loan-calc project does, and walks through every function in the core module in plain language.
 
-## What each file contains and what it is trying to do
+## Project layout
 
-### `loan-calc/loan_calc/calculator.py`
-This is the core module. It implements:
-- EMI calculation
-- total payment / total interest
-- amortisation schedule generation
-- outstanding balance lookup
-- prepayment savings estimation
-- offer comparison
-- loan eligibility estimation
-- INR formatting
-- CSV export
-- summary generation
+The project is small. Almost all of the actual logic lives in one file: `loan_calc/calculator.py`. The other files just expose or document that logic.
 
-This is the file where the “wrong numbers” bugs are most likely to be.
+- `loan_calc/calculator.py` — the core module with all the EMI, schedule, prepayment, and formatting logic.
+- `loan_calc/__init__.py` — re-exports everything from `calculator.py`, so you can write `from loan_calc import emi` instead of `from loan_calc.calculator import emi`.
+- `cli.py` — a simple command-line tool that calls into the module. It prints a loan summary, and optionally the full schedule or prepayment savings, based on command-line flags.
+- `README.md` — a short project overview: what the package does, how to set it up, and example commands to try.
 
-### `loan-calc/loan_calc/__init__.py`
-```python
-from .calculator import *  # noqa
-```
-
-This re-exports everything from `calculator.py`, so callers can do:
-
-```python
-from loan_calc import emi, summary
-```
-
-instead of importing from `loan_calc.calculator`.
-
-### `loan-calc/cli.py`
-This is a simple command-line interface around the library. It:
-- accepts principal, rate, and tenure from terminal arguments
-- prints a JSON summary
-- optionally prints the amortisation schedule
-- optionally prints prepayment savings
-
-So this file is not doing financial math itself; it is only calling functions from the module.
-
-### `loan-calc/README.md`
-This explains the project at a high level:
-- what the package is for
-- how to set it up
-- example CLI commands
-- where tests should go
-
-It also explicitly says the repo contains wrong-number bugs and lacks tests.
-
-## Function-by-function explanation
-
-### `DEFAULT_CURRENCY = "INR"`
-A constant used by `summary()` to label the output currency.
+## What each function does
 
 ### `_monthly_rate(annual_rate)`
-Converts an annual percentage rate into a monthly decimal rate.
-
-Example:
-- `9` means 9% per year
-- monthly rate should be `9 / 1200 = 0.0075`
-
-It exists as a shared helper so EMI and schedule calculations use the same monthly rate.
+Turns a yearly interest rate (given as a percentage, like 9 for 9%) into a monthly decimal rate. For example, 9% per year becomes 0.0075 per month. This is a small shared helper used by almost every other function that needs to do interest math, so they all agree on the same rate.
 
 ### `emi(principal, annual_rate, tenure_months)`
-Computes the Equated Monthly Instalment (EMI): the fixed monthly payment needed to repay a loan.
+Works out the EMI: the fixed amount a borrower pays every month to repay a loan.
 
-Behavior:
-1. Rejects invalid tenure or principal.
-2. Converts annual rate to monthly rate using `_monthly_rate`.
-3. If rate is zero, returns `principal / tenure_months`.
-4. Otherwise uses the standard EMI formula:
-   `P * r * (1+r)^n / ((1+r)^n - 1)`
-
-This is trying to produce the standard fixed monthly instalment for a reducing-balance loan.
+Steps:
+1. Checks that the principal and tenure are positive numbers, and raises an error if not.
+2. Converts the yearly rate into a monthly rate using `_monthly_rate`.
+3. If the rate is 0%, it just divides the principal evenly across the months.
+4. Otherwise, it uses the standard formula for a fixed monthly payment on a reducing-balance loan.
 
 ### `total_payment(principal, annual_rate, tenure_months)`
-Returns the total amount paid over the loan:
-- one EMI × number of months
-
-This answers: “How much will I pay in total?”
+Multiplies the EMI by the number of months to get the total amount the borrower will pay back over the life of the loan.
 
 ### `total_interest(principal, annual_rate, tenure_months)`
-Returns total interest paid:
-- total payment − principal
-
-This answers: “How much of my repayment is interest?”
+Takes the total payment and subtracts the original principal, leaving just the interest portion. This answers: "how much of what I'm paying back is interest, rather than the loan itself?"
 
 ### `amortisation_schedule(principal, annual_rate, tenure_months)`
-Builds a month-by-month repayment breakdown.
-
-Each row has:
-- `month`
-- `emi`
-- `interest`
-- `principal`
-- `balance`
-
-For each month it:
-1. calculates interest on current balance
-2. computes principal repaid as `EMI - interest`
-3. reduces the balance
-4. stores the row
-
-This is trying to generate the standard reducing-balance amortisation table.
+Builds a month-by-month breakdown of the loan. For each month, it works out how much of that month's payment is interest, how much goes toward reducing the principal, and what the remaining balance is afterward. This produces a full table from month 1 to the last month of the loan, with the balance reaching zero exactly on the final month.
 
 ### `outstanding_after(principal, annual_rate, tenure_months, months_paid)`
-Returns remaining balance after a given number of monthly payments.
-
-Behavior:
-- if `months_paid <= 0`, returns original principal
-- otherwise builds the amortisation schedule and returns the balance at that point
-- if months exceed the schedule, returns `0.0`
-
-This answers: “How much loan is still outstanding after X EMIs?”
+Answers: "if someone has already paid a certain number of EMIs, how much do they still owe?" It looks this up from the full amortisation schedule. If no months have been paid yet, it returns the full principal. If more months are asked for than the loan actually has, it returns zero.
 
 ### `remaining_tenure(balance, annual_rate, instalment)`
-Given:
-- current balance
-- annual rate
-- fixed instalment
-
-it estimates how many months remain to repay the loan.
-
-Behavior:
-- zero or negative balance → `0`
-- zero interest → `ceil(balance / instalment)`
-- otherwise uses the rearranged EMI formula to solve for number of months
-
-This answers: “If I keep paying this EMI on the current balance, how many months are left?”
+Answers: "if I keep paying the same EMI on this remaining balance, how many more months will it take to pay off?" This is mainly used after someone makes an early repayment and wants to know how much sooner their loan will finish.
 
 ### `prepayment_savings(principal, annual_rate, tenure_months, prepay_month, prepay_amount)`
-Estimates the effect of making a lump-sum prepayment while keeping the EMI unchanged and shortening tenure.
-
-Behavior:
-1. computes original EMI
-2. computes original schedule
-3. finds the balance after the chosen month
-4. subtracts the prepayment amount
-5. computes revised remaining tenure
-6. compares original vs new loan length
-7. estimates interest saved
-
-Returns:
-- `emi`
-- `months_saved`
-- `new_tenure`
-- `interest_saved`
-- `interest_paid_before_prepayment`
-
-This answers: “If I prepay this amount in month X, how much sooner do I finish and how much interest do I save?”
+Models what happens when someone makes a one-time extra payment partway through the loan, while keeping their EMI the same. Because the balance drops but the monthly payment doesn't change, the loan finishes earlier. This function works out how many months are saved and how much interest is saved as a result, along with how much interest was already paid before the extra payment was made.
 
 ### `compare_offers(principal, offers)`
-Compares multiple loan offers.
-
-For each offer it computes:
-- EMI
-- total interest
-- processing fee
-- total cost
-
-Then sorts by lowest `total_cost`.
-
-This is trying to help users compare lenders on full cost, not just interest rate.
+Takes a list of loan offers (for example, from different banks) for the same loan amount, and works out the EMI, total interest, and any processing fee for each one. It then combines interest and fees into a single "total cost" figure, and sorts the offers from cheapest to most expensive. This helps compare offers fairly even when one has a lower rate but a bigger fee.
 
 ### `eligible_amount(monthly_income, existing_emis, annual_rate, tenure_months, foir=0.5)`
-Estimates the maximum loan principal the borrower may be eligible for.
-
-Behavior:
-1. computes available EMI capacity from income and FOIR
-2. if non-positive, returns `0`
-3. if zero interest, eligible principal is `available × tenure`
-4. otherwise inverts the EMI formula to solve for principal
-
-This answers: “Given my income and current obligations, how much loan can I support?”
+Works out the largest loan a borrower could realistically be approved for, based on their income. Lenders usually cap how much of a borrower's income can go toward EMIs (this cap is called FOIR). This function figures out how much spare EMI capacity someone has after their existing payments, then works backward from that to estimate the maximum loan principal it could support.
 
 ### `format_inr(amount)`
-Formats a number as Indian Rupee text, for example:
-- `1234567.8` → `₹12,34,567.80`
-
-It handles:
-- negatives
-- 2-decimal rounding
-- Indian comma grouping
-
-This is purely presentation logic.
+Formats a plain number as Indian Rupee text, using the comma style used in India (for example, 1234567.8 becomes "₹12,34,567.80" rather than the Western "₹1,234,567.80"). It also handles negative amounts and always shows two decimal places. This function is purely about how numbers are displayed, not about any financial calculation.
 
 ### `schedule_to_csv(rows, path)`
-Writes amortisation schedule rows to a CSV file with header:
-- `month,emi,interest,principal,balance`
-
-This is trying to export the schedule for spreadsheets or reporting.
+Takes the schedule produced by `amortisation_schedule` and saves it as a CSV file with one row per month, so it can be opened in a spreadsheet or shared outside of Python.
 
 ### `summary(principal, annual_rate, tenure_months, start=None)`
-Builds a display-friendly summary dictionary.
+Puts together a friendly summary of a loan for display purposes: the principal, interest rate, tenure, EMI, total interest, total payment, the date of the last EMI, and the currency. It uses `format_inr` to make all the money values readable.
 
-It returns:
-- formatted principal
-- interest rate string
-- tenure string
-- formatted EMI
-- formatted total interest
-- formatted total payment
-- last EMI month
-- currency code
+## How the functions connect
 
-This is intended for CLI/UI display rather than raw math use.
+Several functions build on each other rather than doing their own separate math:
 
-## How the module fits together
+- `_monthly_rate` is used by `emi`, `amortisation_schedule`, `remaining_tenure`, and `eligible_amount`, so they all use the same consistent monthly rate.
+- `emi` is used by `total_payment`, `amortisation_schedule`, `compare_offers`, `summary`, and `prepayment_savings`.
+- `total_payment` is used by `total_interest`.
+- `amortisation_schedule` is used by `outstanding_after` and `prepayment_savings`.
+- `remaining_tenure` is used by `prepayment_savings`.
 
-Core flow:
-- `_monthly_rate()` feeds `emi()`, `amortisation_schedule()`, `eligible_amount()`
-- `emi()` feeds `total_payment()`, `amortisation_schedule()`, `compare_offers()`, `summary()`, `prepayment_savings()`
-- `total_payment()` feeds `total_interest()`
-- `amortisation_schedule()` feeds `outstanding_after()` and `prepayment_savings()`
-- `remaining_tenure()` feeds `prepayment_savings()`
+Because so many functions depend on `_monthly_rate`, `emi`, and `amortisation_schedule`, a mistake in any one of those three tends to show up as wrong numbers in several different places at once — which matches the kind of bug reports this project was built to investigate.
 
-So a small error in rate handling or schedule generation can cascade into several user-visible wrong numbers.
+## Bugs found and fixed
 
-## Most suspicious numeric areas, without fixing anything yet
+Three bugs were found in the original code, and all three have been fixed (with explanatory comments left in the code at each fix):
 
-The most likely bug locations are:
-- `_monthly_rate()`
-- `amortisation_schedule()`
-- `remaining_tenure()`
-- `prepayment_savings()`
+1. **`_monthly_rate` was rounding too early.** It used to round the monthly rate to four decimal places before using it in any calculation. This introduced tiny errors into every EMI, interest, schedule, and eligibility number. Fixed by only rounding the final results, not the rate itself.
 
-Those are the functions most directly involved in precision, monthly compounding, schedule construction, and prepayment math.
+2. **`amortisation_schedule` was missing the last month.** Its loop stopped one month too early, so the schedule was always one row short and the loan balance never actually reached zero. Fixed by including the final month in the loop.
 
-No code has been changed.
+3. **`remaining_tenure` was using the yearly rate instead of the monthly rate.** This made it off by a factor of 12, which caused wrong (or sometimes invalid) results whenever `prepayment_savings` tried to work out how much time and interest a prepayment would save. Fixed by using the same monthly rate helper as the rest of the module.
+
+## Testing
+
+A full test suite lives in `tests/test_calculator.py`, covering every function along with edge cases such as 0% interest loans, 1-month loans, very large principals, and prepayments larger than the remaining balance. Running the suite with coverage reporting shows 100% of the statements in `calculator.py` are exercised by tests.
