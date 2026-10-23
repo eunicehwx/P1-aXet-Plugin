@@ -127,7 +127,13 @@ def remaining_tenure(balance: float, annual_rate: float, instalment: float) -> i
     Raises:
         ValueError: If instalment is too small to ever cover the balance's interest.
     """
-    r = annual_rate / 100
+    # BUG FIX: previously used `annual_rate / 100`, which is the annual rate
+    # expressed as a decimal, but the amortisation-inversion formula below
+    # expects a monthly rate (consistent with _monthly_rate(), i.e.
+    # annual_rate / 1200). Using the annual rate here was off by a factor of
+    # 12, causing wildly wrong (or spuriously invalid) results whenever this
+    # function was called from prepayment_savings().
+    r = _monthly_rate(annual_rate)
     if balance <= 0:
         return 0
     if r == 0:
